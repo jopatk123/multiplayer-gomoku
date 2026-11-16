@@ -36,6 +36,7 @@ let mode: Mode = { kind: "home" };
 let session: OnlineSession | null = null;
 let hover: { x: number; y: number } | null = null;
 let joinCode = "";
+let debugOpen = false;
 
 function setHash(hash: string): void {
   if (location.hash !== hash) location.hash = hash;
@@ -153,52 +154,73 @@ function place(x: number, y: number): void {
 function renderHome(): string {
   const ws = resolveWsUrl();
   return `
-    <h1>多人五子棋</h1>
-    <p class="sub">3 人或 5 人各自竞争 · 棋子黑白轮换，不绑定玩家</p>
-    <div class="home-card">
-      <div class="panel">
-        <h2>同机调试席位</h2>
-        <p class="hint">一人扮演全部座位，用来核对超时、换色与胜负。不是已上线联机。</p>
-        <div class="row">
-          <button class="primary" data-hotseat="3">3 人局</button>
-          <button class="primary" data-hotseat="5">5 人局</button>
+    <main class="home">
+      <header class="hero">
+        <div class="hero-stones" aria-hidden="true">
+          <span class="stone black"></span><span class="stone white"></span><span class="stone black"></span>
         </div>
+        <h1>多人五子棋</h1>
+        <p class="sub">3 人或 5 人各自竞争 · 棋子黑白轮换，不绑定玩家 · 每手限时 5 秒</p>
+      </header>
+      <div class="mode-grid">
+        <section class="card mode-card featured">
+          <div class="mode-icon">⚔</div>
+          <h2>联机房间</h2>
+          <p class="hint">创建房间后复制链接发给好友，对方打开即可入座。</p>
+          <div class="btn-pair">
+            <button class="btn btn-primary" data-create="3">创建 3 人房</button>
+            <button class="btn btn-primary" data-create="5">创建 5 人房</button>
+          </div>
+          <div class="divider"><span>或输入房间号</span></div>
+          <div class="join">
+            <input id="join-code" maxlength="8" placeholder="例如 AB12" value="${joinCode}" autocomplete="off" />
+            <button class="btn btn-ghost" data-join>加入</button>
+          </div>
+          <p class="hint tiny">服务地址：<code>${ws ?? "未配置"}</code></p>
+        </section>
+        <section class="card mode-card">
+          <div class="mode-icon">◎</div>
+          <h2>同机试玩</h2>
+          <p class="hint">一人扮演全部座位，用来熟悉规则、核对超时、换色与胜负。</p>
+          <div class="btn-pair">
+            <button class="btn btn-ghost" data-hotseat="3">3 人局</button>
+            <button class="btn btn-ghost" data-hotseat="5">5 人局</button>
+          </div>
+          <ul class="rules">
+            <li>落下的子与同色棋子连成五子，落子者独自获胜</li>
+            <li>每落一子黑白交替，颜色不绑定玩家</li>
+            <li>超时跳过该玩家且不换色，三整轮无人落子则流局</li>
+          </ul>
+        </section>
       </div>
-      <div class="panel">
-        <h2>本机联机房间</h2>
-        <p class="hint">地址 ${ws ?? "未配置"}。创建房间后复制链接发给别人，对方打开即可进房。</p>
-        <div class="row">
-          <button data-create="3">创建 3 人房</button>
-          <button data-create="5">创建 5 人房</button>
-        </div>
-        <div class="row" style="margin-top:10px">
-          <input id="join-code" maxlength="8" placeholder="房间号" value="${joinCode}" />
-          <button data-join>加入</button>
-        </div>
-      </div>
-    </div>
+    </main>
   `;
 }
 
 function renderPlayShell(): string {
   return `
-    <h1>多人五子棋</h1>
-    <p class="sub">${mode.kind === "hotseat" ? "同机调试席位" : "本机联机房间"}</p>
+    <header class="topbar">
+      <a class="brand" href="#/">
+        <span class="brand-mark"><span class="stone black"></span><span class="stone white"></span></span>
+        多人五子棋
+      </a>
+      <span class="chip">${mode.kind === "hotseat" ? "同机试玩" : "联机房间"}</span>
+    </header>
     ${mode.kind === "online" && mode.error ? `<p class="error">${mode.error}</p>` : ""}
     <div class="layout">
-      <div class="board-wrap"><canvas id="board" width="760" height="760"></canvas></div>
-      <div>
-        <div class="panel" id="hud"></div>
+      <div class="board-wrap"><canvas id="board" width="1140" height="1140"></canvas></div>
+      <aside class="side">
+        <div id="hud" class="hud"></div>
         ${
           mode.kind === "hotseat"
-            ? `<div class="panel" style="margin-top:12px">
-                <h2>调试</h2>
-                <p class="hint">当前座位直接落子。退出可指定任意玩家，用于验证中途结束。</p>
-                <div class="row" id="debug-quit"></div>
-              </div>`
+            ? `<details class="card debug">
+                <summary>调试工具</summary>
+                <p class="hint">当前座位直接落子。可指定任意玩家退出，用于验证中途结束。</p>
+                <div class="debug-btns" id="debug-quit"></div>
+              </details>`
             : ""
         }
-      </div>
+      </aside>
     </div>
   `;
 }
@@ -257,9 +279,11 @@ function render(): void {
     const pendingId = mode.kind === "online" ? mode.roomId : null;
     const pendingShare = pendingId ? roomShareUrl(pendingId) : "";
     hud.innerHTML = `
-      <p class="hint">${pendingId ? `正在进入房间 ${pendingId}…` : "正在连接本机房间…"}</p>
-      ${pendingShare ? `<div class="share"><input class="share-url" readonly value="${pendingShare.replaceAll('"', "&quot;")}" /><button type="button" data-act="copy">复制链接</button></div>` : ""}
-      <button data-act="home">返回</button>
+      <section class="card">
+        <div class="loading"><span class="spinner"></span>${pendingId ? `正在进入房间 ${pendingId}…` : "正在连接房间…"}</div>
+        ${pendingShare ? `<div class="share"><input class="share-url" readonly value="${pendingShare.replaceAll('"', "&quot;")}" /><button type="button" class="btn btn-ghost" data-act="copy">复制链接</button></div>` : ""}
+      </section>
+      <div class="actions"><button class="btn btn-ghost" data-act="home">返回首页</button></div>
     `;
     hud.querySelector('[data-act="home"]')?.addEventListener("click", goHome);
     hud.querySelector('[data-act="copy"]')?.addEventListener("click", () => {
@@ -305,10 +329,17 @@ function render(): void {
   });
 
   if (mode.kind === "hotseat") {
+    const details = document.querySelector<HTMLDetailsElement>("details.debug");
+    if (details) {
+      details.open = debugOpen;
+      details.ontoggle = () => {
+        debugOpen = details.open;
+      };
+    }
     const box = document.querySelector("#debug-quit");
     if (box) {
       box.innerHTML = match.players
-        .map((p) => `<button data-qid="${p.id}">${p.name}退出</button>`)
+        .map((p) => `<button class="btn btn-ghost btn-sm" data-qid="${p.id}" style="--c:${p.seatColor}"><span class="dot"></span>${p.name}退出</button>`)
         .join("");
       box.querySelectorAll<HTMLButtonElement>("[data-qid]").forEach((btn) => {
         btn.onclick = () => {
@@ -356,7 +387,12 @@ function pulse(): void {
   const canvas = document.querySelector<HTMLCanvasElement>("#board");
   if (!match || !countdown || !canvas) return;
   if (match.status === "playing") {
-    countdown.textContent = String(Math.ceil(remainingClock(match) / 1000));
+    const remain = remainingClock(match);
+    countdown.textContent = String(Math.ceil(remain / 1000));
+    const ring = document.querySelector<HTMLElement>(".ring");
+    if (ring && match.turnDurationMs > 0) {
+      ring.style.setProperty("--p", String(Math.max(0, Math.min(1, remain / match.turnDurationMs))));
+    }
     drawBoard(canvas, match, hover, canPlace(match));
   }
 }
