@@ -12,6 +12,7 @@ import {
   type MatchState,
 } from "./engine/index.ts";
 import { connectRoom, type OnlineSession } from "./net/client.ts";
+import { copyText, roomIdFromHash, roomShareUrl } from "./net/share.ts";
 import { resolveWsUrl } from "./net/wsUrl.ts";
 import { drawBoard, intersectionFromEvent } from "./ui/board.ts";
 import { renderHud } from "./ui/hud.ts";
@@ -38,6 +39,10 @@ let joinCode = "";
 
 function setHash(hash: string): void {
   if (location.hash !== hash) location.hash = hash;
+}
+
+function syncRoomHash(roomId: string): void {
+  setHash(`#/r/${roomId}`);
 }
 
 function goHome(): void {
@@ -85,6 +90,7 @@ function ensureOnline(): void {
         playerId: payload.playerId,
         error: "",
       };
+      if (payload.roomId) syncRoomHash(payload.roomId);
       render();
     },
     (message) => {
@@ -100,17 +106,19 @@ function ensureOnline(): void {
 
 function createOnline(capacity: Capacity): void {
   mode = { kind: "online", match: null, roomId: null, playerId: null, error: "" };
-  setHash("#/online");
   ensureOnline();
   session?.send({ type: "create", capacity });
   render();
 }
 
 function joinOnline(roomId: string): void {
-  mode = { kind: "online", match: null, roomId: null, playerId: null, error: "" };
-  setHash("#/online");
+  const id = roomId.trim().toUpperCase();
+  if (!id) return;
+  if (mode.kind === "online" && mode.roomId === id && session) return;
+  mode = { kind: "online", match: null, roomId: id, playerId: null, error: "" };
+  syncRoomHash(id);
   ensureOnline();
-  session?.send({ type: "join", roomId });
+  session?.send({ type: "join", roomId: id });
   render();
 }
 
@@ -158,7 +166,7 @@ function renderHome(): string {
       </div>
       <div class="panel">
         <h2>本机联机房间</h2>
-        <p class="hint">地址 ${ws ?? "未配置"}。请用多个浏览器标签加入同一房间。</p>
+        <p class="hint">地址 ${ws ?? "未配置"}。创建房间后复制链接发给别人，对方打开即可进房。</p>
         <div class="row">
           <button data-create="3">创建 3 人房</button>
           <button data-create="5">创建 5 人房</button>
@@ -246,16 +254,41 @@ function render(): void {
   if (!hud) return;
 
   if (!match) {
-    hud.innerHTML = `<p class="hint">正在连接本机房间…</p><button data-act="home">返回</button>`;
-    hud.querySelector("button")?.addEventListener("click", goHome);
+    const pendingId = mode.kind === "online" ? mode.roomId : null;
+    const pendingShare = pendingId ? roomShareUrl(pendingId) : "";
+    hud.innerHTML = `
+      <p class="hint">${pendingId ? `正在进入房间 ${pendingId}…` : "正在连接本机房间…"}</p>
+      ${pendingShare ? `<div class="share"><input class="share-url" readonly value="${pendingShare.replaceAll('"', "&quot;")}" /><button type="button" data-act="copy">复制链接</button></div>` : ""}
+      <button data-act="home">返回</button>
+    `;
+    hud.querySelector('[data-act="home"]')?.addEventListener("click", goHome);
+    hud.querySelector('[data-act="copy"]')?.addEventListener("click", () => {
+      if (!pendingShare) return;
+      hud.querySelector<HTMLInputElement>(".share-url")?.select();
+      const btn = hud.querySelector<HTMLButtonElement>('[data-act="copy"]');
+      void copyText(pendingShare).then((ok) => {
+        if (btn) btn.textContent = ok ? "已复制" : "请手动复制";
+      });
+    });
     return;
   }
 
   bindBoard(match);
   const youId = mode.kind === "hotseat" ? match.currentPlayerId : mode.playerId;
+  const shareUrl =
+    mode.kind === "online" && mode.roomId ? roomShareUrl(mode.roomId) : null;
   renderHud(hud, match, Date.now(), {
     youId,
     roomId: mode.kind === "online" ? mode.roomId : null,
+    shareUrl,
+    onCopyLink: () => {
+      if (!shareUrl) return;
+      hud.querySelector<HTMLInputElement>(".share-url")?.select();
+      const btn = hud.querySelector<HTMLButtonElement>('[data-act="copy"]');
+      void copyText(shareUrl).then((ok) => {
+        if (btn) btn.textContent = ok ? "已复制" : "请手动复制";
+      });
+    },
     onHome: goHome,
     onStart:
       mode.kind === "online"
@@ -289,21 +322,18 @@ function render(): void {
 }
 
 function applyHash(): void {
+  const roomId = roomIdFromHash(location.hash);
+  if (roomId) {
+    joinOnline(roomId);
+    return;
+  }
   const hash = location.hash.replace(/^#/, "") || "/";
   const hotseat = hash.match(/^\/hotseat\/(3|5)$/);
   if (hotseat && mode.kind !== "hotseat") {
     startHotseat(Number(hotseat[1]) as Capacity);
     return;
   }
-  if (hash === "/online") {
-    if (mode.kind !== "online") {
-      mode = { kind: "online", match: null, roomId: null, playerId: null, error: "" };
-      ensureOnline();
-      render();
-    }
-    return;
-  }
-  if (hash === "/" && mode.kind !== "home") {
+  if ((hash === "/" || hash === "") && mode.kind !== "home") {
     goHome();
   }
 }
@@ -338,5 +368,8 @@ function remainingClock(match: MatchState): number {
 window.addEventListener("hashchange", applyHash);
 setInterval(pulse, 100);
 
-render();
-applyHash();
+if (roomIdFromHash(location.hash) || /\/hotseat\/(3|5)$/.test(location.hash.replace(/^#/, ""))) {
+  applyHash();
+} else {
+  render();
+}

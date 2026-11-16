@@ -14,6 +14,8 @@ export function renderHud(
   options: {
     youId?: string | null;
     roomId?: string | null;
+    shareUrl?: string | null;
+    onCopyLink?: () => void;
     onQuit?: (playerId: string) => void;
     onStart?: () => void;
     onHome?: () => void;
@@ -33,7 +35,22 @@ export function renderHud(
 
   root.innerHTML = `
     <h2>对局信息</h2>
-    ${options.roomId ? `<div class="stat"><span>房间</span><b>${options.roomId}</b></div>` : ""}
+    ${
+      options.roomId
+        ? `<div class="stat">
+            <span>房间</span>
+            <b>${options.roomId}</b>
+          </div>
+          ${
+            options.shareUrl
+              ? `<div class="share">
+                  <input class="share-url" readonly value="${options.shareUrl.replaceAll('"', "&quot;")}" />
+                  <button type="button" data-act="copy">复制链接</button>
+                </div>`
+              : ""
+          }`
+        : ""
+    }
     <div class="stat"><span>人数</span><b>${state.players.length} / ${state.capacity}</b></div>
     ${you ? `<div class="stat"><span>你是</span><b>${you.name}</b></div>` : ""}
     <div class="stat"><span>本手颜色</span>
@@ -75,6 +92,10 @@ export function renderHud(
     </div>
   `;
 
+  root.querySelector<HTMLInputElement>(".share-url")?.addEventListener("focus", (ev) => {
+    (ev.target as HTMLInputElement).select();
+  });
+  root.querySelector('[data-act="copy"]')?.addEventListener("click", () => options.onCopyLink?.());
   root.querySelector('[data-act="start"]')?.addEventListener("click", () => options.onStart?.());
   root.querySelector('[data-act="quit"]')?.addEventListener("click", () => {
     const id = options.youId ?? state.currentPlayerId;

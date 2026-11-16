@@ -19,6 +19,7 @@ export function connectRoom(
   const ws = new WebSocket(url);
   const queue: ClientMessage[] = [];
   let opened = false;
+  let closedByClient = false;
 
   ws.addEventListener("open", () => {
     opened = true;
@@ -47,11 +48,12 @@ export function connectRoom(
   });
 
   ws.addEventListener("close", () => {
-    if (opened) onError("连接已断开");
+    if (opened && !closedByClient) onError("连接已断开");
   });
 
   return {
     close() {
+      closedByClient = true;
       opened = false;
       ws.close();
     },
