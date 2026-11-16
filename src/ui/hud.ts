@@ -2,10 +2,12 @@ import {
   BLACK,
   colorName,
   endReasonText,
+  isFinished,
   playerById,
   remainingMs,
   type MatchState,
 } from "../engine/index.ts";
+import type { SeatPresence } from "../protocol.ts";
 
 const STATUS_TEXT: Record<MatchState["status"], string> = {
   lobby: "等待开始",
@@ -23,9 +25,11 @@ export function renderHud(
     youId?: string | null;
     roomId?: string | null;
     shareUrl?: string | null;
+    presence?: SeatPresence[];
     onCopyLink?: () => void;
     onQuit?: (playerId: string) => void;
     onStart?: () => void;
+    onReady?: (ready: boolean) => void;
     onHome?: () => void;
   },
 ): void {
@@ -36,12 +40,15 @@ export function renderHud(
   const pending = colorName(state.pendingColor);
   const stoneClass = state.pendingColor === BLACK ? "black" : "white";
   const playing = state.status === "playing";
+  const finished = isFinished(state.status);
+  const youReady = Boolean(options.youId && state.readyIds.includes(options.youId));
+  const presenceById = new Map((options.presence ?? []).map((item) => [item.playerId, item]));
 
-  const seats = (state.status === "lobby" ? state.players.map((p) => p.id) : state.order)
+  const seats = (state.status === "lobby" ? state.players.map((p) => p.id) : state.order.length ? state.order : state.players.map((p) => p.id))
     .map((id) => playerById(state, id))
     .filter((p): p is NonNullable<typeof p> => Boolean(p));
 
-  const emptySeats = state.status === "lobby" ? Math.max(0, state.capacity - state.players.length) : 0;
+  const emptySeats = state.status === "lobby" || finished ? Math.max(0, state.capacity - state.players.length) : 0;
 
   root.innerHTML = `
     <section class="card turn-card ${playing ? "is-playing" : ""}">
@@ -69,8 +76,12 @@ export function renderHud(
         </div>
       </div>
       ${
-        state.status !== "playing" && state.status !== "lobby"
-          ? `<div class="end">${endReasonText(state)}</div>`
+        finished
+          ? `<div class="end">${endReasonText(state)}${
+              state.players.length === state.capacity
+                ? `<div class="muted small rematch-hint">全员准备后将重新随机行动顺序并开一局。</div>`
+                : `<div class="muted small rematch-hint">需再凑满 ${state.capacity} 人，全员准备后才能再开一局。</div>`
+            }</div>`
           : ""
       }
     </section>
@@ -97,7 +108,7 @@ export function renderHud(
     <section class="card">
       <div class="card-head">
         <span class="card-title">玩家</span>
-        <span class="muted small">${state.status === "lobby" ? "按加入顺序" : "按行动顺序"}</span>
+        <span class="muted small">${state.status === "lobby" ? "按加入顺序" : finished ? "准备再开" : "按行动顺序"}</span>
       </div>
       <ol class="seats">
         ${seats
@@ -105,8 +116,11 @@ export function renderHud(
             const isCurrent = playing && p.id === state.currentPlayerId;
             const isWinner = state.winnerId === p.id;
             const isQuit = state.quitPlayerId === p.id;
+            const online = presenceById.get(p.id)?.online ?? true;
+            const reconnecting = Boolean(presenceById.get(p.id) && !online);
+            const isReady = state.readyIds.includes(p.id);
             return `
-          <li class="seat ${isCurrent ? "current" : ""} ${isQuit ? "quit" : ""}" style="--c:${p.seatColor}">
+          <li class="seat ${isCurrent ? "current" : ""} ${isQuit ? "quit" : ""} ${reconnecting ? "reconnecting" : ""}" style="--c:${p.seatColor}">
             <span class="seat-avatar">${p.name.slice(0, 1)}</span>
             <span class="seat-name">${p.name}</span>
             <span class="seat-tags">
@@ -114,6 +128,8 @@ export function renderHud(
               ${isWinner ? `<span class="tag tag-win">胜</span>` : ""}
               ${isQuit ? `<span class="tag tag-quit">退出</span>` : ""}
               ${isCurrent ? `<span class="tag tag-turn">行动中</span>` : ""}
+              ${reconnecting ? `<span class="tag tag-wait">重连中</span>` : ""}
+              ${finished && isReady ? `<span class="tag tag-ready">已准备</span>` : ""}
             </span>
             <span class="seat-index">${i + 1}</span>
           </li>`;
@@ -129,7 +145,13 @@ export function renderHud(
           ? `<button class="btn btn-primary" data-act="start" ${state.players.length === state.capacity ? "" : "disabled"}>开始对局</button>`
           : ""
       }
+      ${
+        finished && options.onReady
+          ? `<button class="btn btn-primary" data-act="ready" ${state.players.length === state.capacity ? "" : "disabled"}>${youReady ? "取消准备" : "准备再来一局"}</button>`
+          : ""
+      }
       ${playing && options.onQuit ? `<button class="btn btn-danger" data-act="quit">退出本局</button>` : ""}
+      ${!playing && options.onQuit ? `<button class="btn btn-ghost" data-act="quit">离开房间</button>` : ""}
       ${options.onHome ? `<button class="btn btn-ghost" data-act="home">返回首页</button>` : ""}
     </div>
   `;
@@ -139,6 +161,7 @@ export function renderHud(
   });
   root.querySelector('[data-act="copy"]')?.addEventListener("click", () => options.onCopyLink?.());
   root.querySelector('[data-act="start"]')?.addEventListener("click", () => options.onStart?.());
+  root.querySelector('[data-act="ready"]')?.addEventListener("click", () => options.onReady?.(!youReady));
   root.querySelector('[data-act="quit"]')?.addEventListener("click", () => {
     const id = options.youId ?? state.currentPlayerId;
     if (id) options.onQuit?.(id);
