@@ -11,9 +11,12 @@ import {
   makeSeatPlayer,
   placeStone,
   quitMatch,
+  setReady,
   startMatch,
   tick,
   timeoutThreshold,
+  tryStartRematch,
+  abortForReconnectTimeout,
   WHITE,
   type Cell,
   type MatchState,
@@ -241,5 +244,36 @@ describe("满盘与退出", () => {
     expect(s.winnerId).toBeNull();
     expect(endReasonText(s)).toContain("退出");
     expect(() => placeStone(s, "B", 1, 0, 10)).toThrow(/已结束/);
+  });
+});
+
+describe("再来一局与断线中止", () => {
+  it("结算后须满员且全员准备才重置轮次，不改 3/5 容量", () => {
+    let s = start(3, ["A", "B", "C"]);
+    s = quitMatch(s, "C");
+    expect(() => tryStartRematch(s, 0, keepOrder)).toThrow(/满 3 人/);
+    s = addPlayer(s, makeSeatPlayer(2, "D"));
+    s = setReady(s, "A", true);
+    s = setReady(s, "B", true);
+    expect(() => tryStartRematch(s, 0, keepOrder)).toThrow(/全员准备/);
+    s = setReady(s, "D", true);
+    const next = tryStartRematch(s, 100, keepOrder);
+    expect(next.status).toBe("playing");
+    expect(next.capacity).toBe(3);
+    expect(next.board.every((row) => row.every((cell) => cell === EMPTY))).toBe(true);
+    expect(next.order).toEqual(["A", "B", "D"]);
+    expect(next.pendingColor).toBe(BLACK);
+    expect(next.consecutiveTimeouts).toBe(0);
+    expect(next.readyIds).toEqual([]);
+  });
+
+  it("对局中不能准备，重连超时中止不计胜负", () => {
+    const playing = start(3, ["A", "B", "C"]);
+    expect(() => setReady(playing, "A", true)).toThrow(/尚未结束/);
+    const aborted = abortForReconnectTimeout(playing, "B");
+    expect(aborted.status).toBe("aborted");
+    expect(aborted.endReason).toBe("reconnect_timeout");
+    expect(aborted.winnerId).toBeNull();
+    expect(endReasonText(aborted)).toContain("重连宽限");
   });
 });

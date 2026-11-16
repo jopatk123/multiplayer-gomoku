@@ -12,8 +12,10 @@ import {
   type MatchState,
 } from "./engine/index.ts";
 import { connectRoom, type OnlineSession } from "./net/client.ts";
+import { clearSeatSession, readSeatSession, writeSeatSession } from "./net/session.ts";
 import { copyText, roomIdFromHash, roomShareUrl } from "./net/share.ts";
 import { resolveWsUrl } from "./net/wsUrl.ts";
+import type { SeatPresence } from "./protocol.ts";
 import { drawBoard, intersectionFromEvent } from "./ui/board.ts";
 import { renderHud } from "./ui/hud.ts";
 
@@ -30,6 +32,7 @@ type Mode =
       roomId: string | null;
       playerId: string | null;
       error: string;
+      presence: SeatPresence[];
     };
 
 let mode: Mode = { kind: "home" };
@@ -46,9 +49,21 @@ function syncRoomHash(roomId: string): void {
   setHash(`#/r/${roomId}`);
 }
 
+function storage(): Storage | null {
+  try {
+    return sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function goHome(): void {
+  if (mode.kind === "online" && (mode.playerId || mode.roomId)) {
+    session?.send({ type: "quit" });
+  }
   session?.close();
   session = null;
+  clearSeatSession(storage());
   mode = { kind: "home" };
   setHash("#/");
   render();
@@ -67,16 +82,21 @@ function startHotseat(capacity: Capacity): void {
   render();
 }
 
-function ensureOnline(): void {
+function emptyOnline(error = ""): Extract<Mode, { kind: "online" }> {
+  return {
+    kind: "online",
+    match: null,
+    roomId: null,
+    playerId: null,
+    error,
+    presence: [],
+  };
+}
+
+function ensureOnline(initialSessionToken?: string | null): void {
   const url = resolveWsUrl();
   if (!url) {
-    mode = {
-      kind: "online",
-      match: null,
-      roomId: null,
-      playerId: null,
-      error: "未配置联机地址。请设置 VITE_WS_URL，例如 ws://127.0.0.1:18765。",
-    };
+    mode = emptyOnline("未配置联机地址。请设置 VITE_WS_URL，例如 ws://127.0.0.1:18765。");
     render();
     return;
   }
@@ -84,12 +104,18 @@ function ensureOnline(): void {
   session = connectRoom(
     url,
     (payload) => {
+      writeSeatSession(storage(), {
+        roomId: payload.roomId,
+        playerId: payload.playerId,
+        sessionToken: payload.sessionToken,
+      });
       mode = {
         kind: "online",
         match: payload.match,
         roomId: payload.roomId,
         playerId: payload.playerId,
         error: "",
+        presence: payload.presence,
       };
       if (payload.roomId) syncRoomHash(payload.roomId);
       render();
@@ -98,15 +124,17 @@ function ensureOnline(): void {
       if (mode.kind === "online") {
         mode = { ...mode, error: message };
       } else {
-        mode = { kind: "online", match: null, roomId: null, playerId: null, error: message };
+        mode = emptyOnline(message);
       }
       render();
     },
+    { initialSessionToken },
   );
 }
 
 function createOnline(capacity: Capacity): void {
-  mode = { kind: "online", match: null, roomId: null, playerId: null, error: "" };
+  clearSeatSession(storage());
+  mode = emptyOnline();
   ensureOnline();
   session?.send({ type: "create", capacity });
   render();
@@ -116,10 +144,13 @@ function joinOnline(roomId: string): void {
   const id = roomId.trim().toUpperCase();
   if (!id) return;
   if (mode.kind === "online" && mode.roomId === id && session) return;
-  mode = { kind: "online", match: null, roomId: id, playerId: null, error: "" };
+  const stored = readSeatSession(storage());
+  const resume = stored?.roomId === id ? stored.sessionToken : null;
+  if (!resume) clearSeatSession(storage());
+  mode = { ...emptyOnline(), roomId: id };
   syncRoomHash(id);
-  ensureOnline();
-  session?.send({ type: "join", roomId: id });
+  ensureOnline(resume);
+  if (!resume) session?.send({ type: "join", roomId: id });
   render();
 }
 
@@ -314,9 +345,14 @@ function render(): void {
       });
     },
     onHome: goHome,
+    presence: mode.kind === "online" ? mode.presence : undefined,
     onStart:
       mode.kind === "online"
         ? () => session?.send({ type: "start" })
+        : undefined,
+    onReady:
+      mode.kind === "online"
+        ? (ready) => session?.send({ type: "ready", ready })
         : undefined,
     onQuit: (playerId) => {
       if (mode.kind === "hotseat") {
@@ -324,6 +360,12 @@ function render(): void {
         render();
       } else {
         session?.send({ type: "quit" });
+        clearSeatSession(storage());
+        session?.close();
+        session = null;
+        mode = { kind: "home" };
+        setHash("#/");
+        render();
       }
     },
   });

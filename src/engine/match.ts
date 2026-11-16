@@ -26,6 +26,8 @@ export function cloneMatch(state: MatchState): MatchState {
     players: state.players.map((p) => ({ ...p })),
     order: state.order.slice(),
     lastMove: state.lastMove ? { ...state.lastMove } : null,
+    readyIds: state.readyIds.slice(),
+    quitPlayerName: state.quitPlayerName,
   };
 }
 
@@ -51,8 +53,14 @@ export function createLobby(capacity: Capacity): MatchState {
     endReason: null,
     winnerId: null,
     quitPlayerId: null,
+    quitPlayerName: null,
     lastMove: null,
+    readyIds: [],
   };
+}
+
+export function isFinished(status: MatchState["status"]): boolean {
+  return status === "won" || status === "draw" || status === "aborted";
 }
 
 export function addPlayer(
@@ -60,7 +68,7 @@ export function addPlayer(
   player: Player,
 ): MatchState {
   const next = cloneMatch(state);
-  if (next.status !== "lobby") {
+  if (next.status !== "lobby" && !isFinished(next.status)) {
     throw new Error("对局已开始，不能加入");
   }
   if (next.players.some((p) => p.id === player.id)) {
@@ -126,7 +134,9 @@ export function startMatch(
   next.endReason = null;
   next.winnerId = null;
   next.quitPlayerId = null;
+  next.quitPlayerName = null;
   next.lastMove = null;
+  next.readyIds = [];
   return next;
 }
 
@@ -280,23 +290,86 @@ export function tick(state: MatchState, now: number): MatchState {
   return next;
 }
 
+function dropFinishedPlayer(state: MatchState, playerId: string): MatchState {
+  const next = cloneMatch(state);
+  next.players = next.players.filter((p) => p.id !== playerId);
+  next.readyIds = next.readyIds.filter((id) => id !== playerId);
+  next.order = next.order.filter((id) => id !== playerId);
+  return next;
+}
+
 export function quitMatch(state: MatchState, playerId: string): MatchState {
   const next = cloneMatch(state);
   if (next.status === "lobby") {
     return removeLobbyPlayer(next, playerId);
   }
+  if (isFinished(next.status)) {
+    return dropFinishedPlayer(next, playerId);
+  }
   if (next.status !== "playing") {
     return next;
   }
-  if (!next.players.some((p) => p.id === playerId)) {
+  const player = next.players.find((p) => p.id === playerId);
+  if (!player) {
     throw new Error("玩家不在本局中");
   }
   next.status = "aborted";
   next.endReason = "player_quit";
   next.quitPlayerId = playerId;
+  next.quitPlayerName = player.name;
   next.winnerId = null;
   next.currentPlayerId = null;
+  next.readyIds = [];
+  return dropFinishedPlayer(next, playerId);
+}
+
+export function abortForReconnectTimeout(state: MatchState, playerId: string): MatchState {
+  const next = cloneMatch(state);
+  if (next.status !== "playing") {
+    return next;
+  }
+  const player = next.players.find((p) => p.id === playerId);
+  if (!player) {
+    throw new Error("玩家不在本局中");
+  }
+  next.status = "aborted";
+  next.endReason = "reconnect_timeout";
+  next.quitPlayerId = playerId;
+  next.quitPlayerName = player.name;
+  next.winnerId = null;
+  next.currentPlayerId = null;
+  next.readyIds = [];
+  return dropFinishedPlayer(next, playerId);
+}
+
+export function setReady(state: MatchState, playerId: string, ready: boolean): MatchState {
+  const next = cloneMatch(state);
+  if (!isFinished(next.status)) {
+    throw new Error("对局尚未结束，不能准备下一局");
+  }
+  if (!next.players.some((p) => p.id === playerId)) {
+    throw new Error("玩家不在本局中");
+  }
+  const set = new Set(next.readyIds);
+  if (ready) set.add(playerId);
+  else set.delete(playerId);
+  next.readyIds = [...set];
   return next;
+}
+
+export function tryStartRematch(state: MatchState, now: number, rng: Rng): MatchState {
+  if (!isFinished(state.status)) {
+    throw new Error("对局尚未结束");
+  }
+  if (state.players.length !== state.capacity) {
+    throw new Error(`需要满 ${state.capacity} 人才能开始`);
+  }
+  if (state.players.some((p) => !state.readyIds.includes(p.id))) {
+    throw new Error("需全员准备后再开一局");
+  }
+  const lobby = createLobby(state.capacity);
+  lobby.players = state.players.map((p) => ({ ...p }));
+  return startMatch(lobby, now, rng);
 }
 
 export function colorName(color: StoneColor): "黑" | "白" {
@@ -319,10 +392,14 @@ export function endReasonText(state: MatchState): string {
       return "棋盘已满且无人形成五连，本局平局。";
     case "player_quit": {
       const quitter = playerById(state, state.quitPlayerId);
-      return `${quitter?.name ?? "有人"}主动中途退出，本局结束，不计胜负。`;
+      return `${quitter?.name ?? state.quitPlayerName ?? "有人"}主动中途退出，本局结束，不计胜负。`;
     }
     case "consecutive_timeouts":
       return `连续 ${timeoutThreshold(state.order.length)} 次无人落子（三整轮超时），本局结束，不计胜负。`;
+    case "reconnect_timeout": {
+      const missing = playerById(state, state.quitPlayerId);
+      return `${missing?.name ?? state.quitPlayerName ?? "有人"}断线超过重连宽限，本局结束，不计胜负。`;
+    }
     default:
       return "";
   }

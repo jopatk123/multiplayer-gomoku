@@ -12,7 +12,8 @@ export type EndReason =
   | "five_in_a_row"
   | "board_full"
   | "player_quit"
-  | "consecutive_timeouts";
+  | "consecutive_timeouts"
+  | "reconnect_timeout";
 
 export type Player = {
   id: string;
@@ -41,7 +42,9 @@ export type MatchState = {
   endReason: EndReason | null;
   winnerId: string | null;
   quitPlayerId: string | null;
+  quitPlayerName: string | null;
   lastMove: LastMove | null;
+  readyIds: string[];
 };
 
 export type Rng = () => number;
